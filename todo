@@ -1,0 +1,19 @@
+- router 
+    - url to function
+        - version
+        - path 
+        - method
+    - function to url
+        - a function can have many routes associated to it
+            - the first url of the specified version of the specified HTTP METHOD
+                - default version is top
+                - default method is GET or first on the list
+
+    - router can register some pre and post-formatting
+    - router can register some validation 
+    - router can specify caching
+
+- falcon
+    - falcon resolves to the correct method already
+    - create a wrapper function that resolves to the proper version and register that wrapper to the method on falcon
+
