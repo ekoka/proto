@@ -1,6 +1,7 @@
+import re
+
 import falcon
 from falcon.routing import create_http_method_map, compile_uri_template
-import re
 
 from ._compat import isiterable, isnumber
 

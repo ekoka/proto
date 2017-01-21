@@ -1,8 +1,9 @@
 # coding=utf8
-import json
-import redis
 from hashlib import sha1
 import time
+
+import json
+import redis
 
 def params_snapshot(o):
     """

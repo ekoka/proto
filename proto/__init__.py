@@ -1,8 +1,9 @@
 # coding=utf8
-import falcon
 from collections import namedtuple
 from functools import partial
 import base64
+
+import falcon
 
 from .local import release_local
 from .globals import local, request

@@ -8,7 +8,6 @@ except ImportError:
     get_ident = lambda: current_thread().ident
 
 from sqlalchemy import orm, event, create_engine
-from sqlalchemy.event import listen
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.declarative import declarative_base, DeclarativeMeta
 
