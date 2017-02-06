@@ -1,5 +1,7 @@
 import inspect
 from collections import namedtuple
+from datetime import datetime
+import falcon
 
 from ._compat import iteritems
 from .globals import current_user
@@ -57,6 +59,7 @@ class VersionMapper(object):
             #TODO: add a not found handler here 
             pass
 
+        # converting param values to types specified during routing
         if route.get('converters', None):
             for name, converter in iteritems(route['converters']):
                 try:
@@ -64,7 +67,8 @@ class VersionMapper(object):
                 except KeyError:
                     pass
 
-        response.body = route['action_func'](request, response, **params)
+        #response.body = route['action_func'](request, response, **params)
+        route['action_func'](request, response, **params)
         return response
 
 """
@@ -100,6 +104,56 @@ class HttpWrapper(object):
                               if 'api_user' in self.func_specs.allargs else
                               False)
 
+    @property
+    def cache(self):
+        try:
+            return self.api.cache
+        except:
+            raise
+
+
+    def fetch_cached_response(self, request, response, role=None):
+
+        cached_resource = self.cache.load_response(request, role)
+        
+        if not cached_resource:
+            # skip
+            return False
+
+        cached_data = cached_resource.get('data')
+
+
+        etag = request.if_none_match
+        timestamp = request.if_modified_since
+
+        # if client_etag matches cache_etag return not modified
+        if etag: 
+            cached_etag = cached_resource.get('etag')
+            if cached_etag and etag==cached_etag:
+                response.status = falcon.HTTP_304
+        # if not deactivated and cached_etag:
+        elif timestamp: 
+            try:
+                cached_timestamp = datetime.fromtimestamp(
+                    float(cached_resource['timestamp']))
+            except:
+                cached_timestamp = None
+            if cached_timestamp and timestamp>=cached_timestamp:
+                response.status = falcon.HTTP_304
+
+        if response.status==falcon.HTTP_304:
+            return True
+
+        # if etag is in cache, but client's etag is stale or empty,
+        # serve back data from cache and refresh etag.
+        response.data = cached_data
+        response.status = falcon.HTTP_200
+        if cached_resource.get('etag'):
+            response.etag = cached_resource['etag']
+        elif cached_resource.get('timestamp'):
+            response.last_modified = cached_resource['timestamp']
+        return True
+
     def __call__(self, request, response, **kwargs):
         api_version = kwargs.pop('version', None)
         tenant = kwargs.pop('tenant', None)
@@ -121,6 +175,19 @@ class HttpWrapper(object):
                 # not overwriting params
                 params.setdefault(param, value)
 
+        cache_found = False
+        if self.cacheable:
+            # TODO: if the resource expects a role, fetch it from the user and
+            # add it to the call here. 
+            # The present wrapper should have an attribute to remember the 
+            # qualifying roles during routing. They should then be compared 
+            # to the user's currently assumed role (user.current_role) to
+            # determine which representation of the resource should be
+            # returned by either the cache or the api call.
+            cache_found = self.fetch_cached_response(request, response)
+
+        if cache_found:
+            return
 
         # TODO
         # other potential objects of interest
@@ -146,7 +213,12 @@ class HttpWrapper(object):
         if '__tenant__' in self.func_specs.allargs:
             params['__tenant__'] = request.context.get('tenant', None)
 
-        return self.output_format(self.func(**params))
+        response.context['result'] = result = self.func(**params)
+        response.data = self.output_format(result)
+
+        if self.cacheable:
+            response.last_modified = datetime.utcnow()
+            self.cache.store_response(request, response)
 
     def input_format(self, input, content_type='json'):
         rv = input

@@ -57,6 +57,8 @@ class AuthMiddleware(BaseMiddleware):
         tenant = request.context.get('tenant', None)
         tenant_id = tenant.tenant_id if tenant else None
         user, key = base64.b64decode(user_and_key).decode('utf8').split(':', 1)
+        if '-' in user:
+            user, role = user.split('-', 1)
         user = self.login_function(user, key, tenant_id)
         if not user:
             raise falcon.HTTPUnauthorized(
@@ -78,6 +80,10 @@ class AuthMiddleware(BaseMiddleware):
 
         if not (user and auth):
             raise falcon.HTTPForbidden('Forbidden', 'Unauthorized user.')
+
+        # if the user is pushing for a role
+        if request.params.get('__role'):
+            request.context.priority_role = request.params['__role']
 
 
 class GlobalsMiddleWare(BaseMiddleware):

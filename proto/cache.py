@@ -7,12 +7,12 @@ import redis
 
 def params_snapshot(o):
     """
-    The purpose of this function is to give a frozen view of parameters,
-    reconstituting dicts and multidicts structures into the simpler lists and
-    tuples. An example use case is in the generation of a cache key for
-    instance. It should preferably be used when the ordering of parameters has
-    no impact on the outcome of an operation, that is, an operations should be
-    idempotent regardless of the ordering of its parameters.
+    The purpose of this function is to provide a view of parameters that can
+    be frozen, reconstituting dicts and multidicts into the simpler lists and
+    tuples structures. An example use case is the need to generate a cache key
+    based on params passed via url. It should preferably be used when the
+    ordering of parameters has no impact on the outcome of the request, that
+    is an operation should be idempotent given the same parameters regardless of their ordering.
     """
     # ordering sets, lists, tuples
     if isinstance(o, (list, tuple, set)):
@@ -52,7 +52,7 @@ def make_hash(o):
 class JsonResponseCache(object):
 
     def __init__(self, redis_config):
-        self.redis = RedisStore(**redis_config)
+        self.store = RedisStore(**redis_config)
 
     def _make_key(self, path, params=None, role=None):
         key = [path]
@@ -64,24 +64,43 @@ class JsonResponseCache(object):
                 key.append(hashed_params)
         return ':'.join(key)
 
-    def store(self, request, response, role=None):
-        path = request.path
-        params = request.params
-
-        key = self._make_key(path, params, role)
-
-        response_cache = dict(
-            data=response.data,
-            path=path,
-            role=role if role else '',
-            etag=response.etag,
-            timestamp=time.mktime(response.last_modified.timetuple()),
-            params=json.dumps(params_snapshot(params)),
-        )
-        self.redis.set_resource(key, response_cache)
+    def store_resource(self, key_params, resource):
+        key = self._make_key(**key_params)
+        self.store.set_resource(key, resource)
         return True
 
-    def retrieve(self, 
+    def store_response(self, request, response, role=None):
+        key_params = dict(
+            path = request.path,
+            params = request.params,
+            role=role,
+        )
+        response_cache = dict(
+            result=response.context.get('result'),
+            data=response.data,
+            path=request.path,
+            role=role or '',
+            etag=response.etag,
+            #timestamp=time.mktime(response.last_modified.timetuple()),
+            timestamp=response.last_modified,
+            params=request.params,
+            # NOTE: try these in case we have problems with the above
+            #params=json.dumps(request.params),
+            #params=json.dumps(params_snapshot(request.params)),
+        )
+        #self.store.set_resource(key, response_cache)
+        return self.store_resource(key_params, response_cache)
+
+    def load_response(self, request, role=None):
+        path = request.path
+        params = request.params
+        key = self._make_key(path, params, role)
+        return self.store.get_resource(key)
+
+    def load_all_responses(self, request, role=None):
+        key = self._make_key(path, role=role)
+        pattern = key + '*'
+        return self.get_all_resources_from_pattern(pattern)
 
     def get_timestamp(self):
         dt = datetime.datetime.utcnow()
@@ -121,20 +140,21 @@ class RedisStore(object):
 
     def get_all_resources_from_pattern(self, pattern, fields=None):
         # get all data
-        keys = self.get_keys_from_pattern(pattern)
+        keys = self.scan_keys(pattern)
         rv = dict((k, self.server.hgetall(k)) for k in keys)
         return rv
 
-    def get_keys_from_pattern(self, pattern):
+    def scan_keys(self, pattern):
         """
         We fetch all keys that match the pattern.
         """
         rv = set()
         cursor = 0
-        count = 1000
+        count = 10000
         match = self.template.format(key=pattern)
         while True:
-            cursor, keys = self.server.scan(cursor, count=10000, match=match)
+            # redis-cli SCAN cursor MATCH match COUNT count
+            cursor, keys = self.server.scan(cursor, match=match, count=count)
             rv = rv.union(keys)
             # if full iteration, end the loop
             if cursor==0:
@@ -143,10 +163,11 @@ class RedisStore(object):
 
     def set_resource(self, key, data):
         hkey = self.template.format(key=key)
+        # redis-cli HMSET key field value [field value...]
         return self.server.hmset(hkey, data)
 
     def delete_from_pattern(self, pattern):
-        keys = self.get_keys_from_pattern(pattern=pattern)
+        keys = self.scan_keys(pattern=pattern)
         for k in keys:
             self.delete(k)
 

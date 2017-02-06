@@ -1,3 +1,5 @@
-# PROTO
+=====
+PROTO
+=====
 
-## A light HTTP tool focused on building REST inspired APIs
+A light HTTP tool focused on building REST inspired APIs

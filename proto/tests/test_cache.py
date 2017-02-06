@@ -4,11 +4,11 @@ from datetime import datetime, date, time
 from decimal import Decimal
 import json 
 
-from .cache import (
+from proto.cache import (
     params_snapshot, 
     make_hash,
     RedisStore,
-    JsonCache,
+    JsonResponseCache,
 )
 
 class CacheTest(unittest.TestCase):
@@ -34,6 +34,22 @@ class CacheTest(unittest.TestCase):
         self.assertEqual(redis.server.config_get('port')['port'], '6379')
 
     
+    def _make_request_response(self):
+        Response = namedtuple('Response', ['data', 'etag', 'last_modified'])
+        response = Response(
+            data=str(dict(firstname=u'mike', email=u'test@example.org')),
+            etag='testtest1234',
+            last_modified=datetime.now(),
+        )
+
+        Request = namedtuple('Request', ['path', 'params'])
+        request = Request(
+            path='/cache/path/test',
+            params=dict(key1=2, key2='abc', key3=[1,2,3,'a','b','c']),
+        )
+
+        return request, response
+
     def test_can_cache_response(self):
         redis_config = dict(
             namespace='test',
@@ -41,24 +57,25 @@ class CacheTest(unittest.TestCase):
             port=None, 
             db=None,
         )
-        cache = JsonCache(redis_config=redis_config)
+        cache = JsonResponseCache(redis_config=redis_config)
 
-        Response = namedtuple(
-            'Response', ['data', 'etag', 'last_modified'])
-        response = Response(
-            data=str(dict(firstname=u'mike', email=u'test@example.org')),
-            etag='testtest1234',
-            last_modified=datetime.now(),)
+        # --- mocks
+        request, response = self._make_request_response()
+        # ---
 
-        path = '/cache/path/test'
-        params = dict(key1=2, key2='abc', key3=[1,2,3,'a','b','c'])
-        role = 'admin'
-        cache.store(response, '/cache/path/test', params, role)
+        cache.store(request, response, role='admin')
 
-        key = cache._make_key(path=path, params=params, role=role)
+        key = cache._make_key(
+            path=request.path, params=request.params, role='admin')
         cached_resource = cache.redis.get_resource(key)
         self.assertEqual(cached_resource['data'], response.data)
         self.assertEqual(cached_resource['etag'], response.etag)
+
+        key = cache._make_key(
+            path=request.path, params=request.params, role='users')
+        cached_resource = cache.redis.get_resource(key)
+        self.assertNotEqual(cached_resource.get('data'), response.data)
+        self.assertNotEqual(cached_resource.get('etag'), response.etag)
 
 
 
