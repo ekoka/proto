@@ -1,0 +1,13 @@
+roles
+-----
+- when user specifies the active_role through qs param, it should be popped out of the params dict to not affect the cache key
+- when the active_role specified by user isn't part of its roles, the system should silently ignore it (still pop it out of the params dict).  
+- only resources that need to know which role the user is assuming will need to use the user.active_role attribute.
+- the role should only be part of cache key when the resource changes depending on it.
+
+cache
+-----
+- to cache response we need `cache_response(path, params, response, role=None)` and `load_response(path, params, role=None)`
+- to cache other resources we need `cache_resource(key, value)` and `load_resource`
+- need a dependency mapper for resources
+- owner specific resources should not be cached 

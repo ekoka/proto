@@ -1,9 +1,10 @@
 # coding=utf8
 from hashlib import sha1
 import time
-
 import json
 import redis
+
+from proto._compat import isiterable
 
 def params_snapshot(o):
     """
@@ -54,7 +55,8 @@ class JsonResponseCache(object):
     def __init__(self, redis_config):
         self.store = RedisStore(**redis_config)
 
-    def _make_key(self, path, params=None, role=None):
+    def make_key(self, path, params=None, role=None):
+        # returns `path` unmodified if `params` and `role` are empty 
         key = [path]
         if role:
             key.append(role)
@@ -64,43 +66,69 @@ class JsonResponseCache(object):
                 key.append(hashed_params)
         return ':'.join(key)
 
-    def store_resource(self, key_params, resource):
-        key = self._make_key(**key_params)
-        self.store.set_resource(key, resource)
-        return True
+    #def store_resource(self, key, resource, data_type=None):
+    #    return True
 
-    def store_response(self, request, response, role=None):
-        key_params = dict(
-            path = request.path,
-            params = request.params,
-            role=role,
-        )
+    def store_response(self, path, response, params=None, role=None):
+        key_parts = dict(path = path, params = params, role=role)
+        key = self.make_key(**key_parts)
         response_cache = dict(
             result=response.context.get('result'),
             data=response.data,
-            path=request.path,
+            path=path,
             role=role or '',
             etag=response.etag,
             #timestamp=time.mktime(response.last_modified.timetuple()),
             timestamp=response.last_modified,
-            params=request.params,
+            params=params,
             # NOTE: try these in case we have problems with the above
             #params=json.dumps(request.params),
             #params=json.dumps(params_snapshot(request.params)),
         )
-        #self.store.set_resource(key, response_cache)
-        return self.store_resource(key_params, response_cache)
+        return self.store.set_hash(key, response_cache, data_type='response')
+        #return self.store_resource(key, response_cache, data_type='response')
 
-    def load_response(self, request, role=None):
-        path = request.path
-        params = request.params
-        key = self._make_key(path, params, role)
-        return self.store.get_resource(key)
+    def delete_response(self, path, params=None, role=None):
+        key_parts = dict(path=path, params=params, role=role)
+        key = self.make_key(**key_parts)
+        self.store.delete(key, data_type='response')
+        dependents = self.find_dependents(key)
+        for d in dependents:
+            self.delete_response(d)
+            self.drop_dependencies(d)
+
+
+    def register_dependencies(self, dependent_params, dependencies):
+        if not (dependent_params or dependencies):
+            return
+        if not isiterable(dependencies, exclude_dict=True):
+            dependencies = [dependencies]
+        key = self.make_key(**dependent_params)
+        for params in dependencies:
+            dependency = self.make_key(**params)
+            self.store.add_to_set(dependency, key, data_type='dependents')
+            self.store.add_to_set(key, dependency, data_type='dependencies')
+
+    def drop_dependencies(self, path, params=None, role=None):
+        key = self.make_key(path=path, params=params, role=role)
+        dependencies = self.store.get_data(key, data_type='dependencies')
+        for d in dependencies:
+            self.store.pop_set(d, key, data_type='dependents')
+        self.store.empty_set(key, data_type='dependencies')
+
+    def find_dependents(self, path, params=None, role=None):
+        key = self.make_key(path=path, params=params, role=role)
+        return self.store.get_data(key, data_type='dependents')
+
+    def load_response(self, path, params=None, role=None):
+        key = self.make_key(path=path, params=params, role=role)
+        return self.store.get_data(key, data_type='response')
 
     def load_all_responses(self, request, role=None):
-        key = self._make_key(path, role=role)
+        key = self.make_key(path, role=role)
         pattern = key + '*'
-        return self.get_all_resources_from_pattern(pattern)
+        return self.store.get_all_data_from_pattern(
+            pattern, data_type='response')
 
     def get_timestamp(self):
         dt = datetime.datetime.utcnow()
@@ -110,21 +138,34 @@ class RedisStore(object):
 
     def __init__(self, namespace, host=None, port=None, db=None):
         self.namespace = namespace
-        self.template = "{namespace}:{{key}}".format(namespace=self.namespace)
+        self.template = namespace + ":{data_type}:{key}"
 
         """
-        NOTE: in the template the `key` is the portion of the redis id 
+        NOTE: In the redis template above: 
+        - The `namespace` identifies the database. It's analogous to a db name
+        when connecting to an RDBMS.
+        - The `data_type` steers the storage toward a type of resource. To
+        continue with our analogy this would be a table name.
+        - The `key` is the portion of the redis id 
         that specifically targets the resource. it can be comprised of 
         additional inner elements to more precisely direct the retrieval 
         of a resource. For example a resource may have different formats
         depending on user provided parameters.
         e.g. a key containing role and a hash of params:
         key = "/path/to/my/resource:admin:b219f8e3a39e40b9c8fd73"
+        This would be the ID of a resource.
 
         That single resource can then be spread across multiple records which
         is where the `field` comes into play to narrow which part of the data
         is being sought.
         """
+
+        self.value_types = ('value',)
+        self.hash_types = ('hash', 'response')
+        self.set_types = ('set', 'dependencies', 'dependents')
+        self.default_data_type = 'value'
+        self.default_set_type = 'set'
+        self.default_hash_type = 'hash'
          
         if host is None:
             host = 'localhost'
@@ -132,52 +173,96 @@ class RedisStore(object):
             port = 6379 
         if db is None:
             db = 0
+
         self.server = redis.StrictRedis(host, port=port, db=db)
 
-    def get_resource(self, key):
-        hkey = self.template.format(key=key)
-        return self.server.hgetall(hkey)
+    def check_data_type(self, data_type):
+        supported = (self.value_types + self.hash_types + self.set_types)
+        if data_type not in supported:
+            #TODO raise a custom Error here
+            raise Exception('The provided namespaced key is not supported')
 
-    def get_all_resources_from_pattern(self, pattern, fields=None):
-        # get all data
-        keys = self.scan_keys(pattern)
+    def base_key(self, namespaced_key, data_type):
+        self.check_data_type(data_type)
+        key = namespaced_key.partition(self.namespace)
+        data_type += ':'
+        key = key.partition(data_type)
+
+    def key(self, key, data_type=None):
+        if not data_type:
+            data_type = self.default_data_type
+        self.check_data_type(data_type)
+        return self.template.format(key=key, data_type=data_type)
+
+    def get_data(self, key, data_type=None):
+        if data_type is None:
+            data_type = self.default_data_type
+        self.check_data_type(data_type)
+
+        key = self.key(key, data_type)
+        if data_type in self.value_types: 
+            rv = self.server.get(key)
+        elif data_type in self.hash_types:
+            rv = self.server.hgetall(key)
+        elif data_type in self.set_types:
+            page, rv = self.server.sscan(key)
+        return rv
+
+    def get_all_data_from_pattern(self, pattern, data_type=None):
+        keys = self.scan_keys(pattern, data_type=data_type)
         rv = dict((k, self.server.hgetall(k)) for k in keys)
         return rv
 
-    def scan_keys(self, pattern):
-        """
-        We fetch all keys that match the pattern.
-        """
+    def scan_keys(self, pattern, data_type=None):
+        # fetch all keys that match glob-style pattern.
         rv = set()
         cursor = 0
         count = 10000
-        match = self.template.format(key=pattern)
+        match = self.key(pattern, data_type)
         while True:
-            # redis-cli SCAN cursor MATCH match COUNT count
+            # redis-cli> SCAN cursor MATCH match COUNT count
             cursor, keys = self.server.scan(cursor, match=match, count=count)
             rv = rv.union(keys)
             # if full iteration, end the loop
             if cursor==0:
                 break
         return rv
-
-    def set_resource(self, key, data):
-        hkey = self.template.format(key=key)
-        # redis-cli HMSET key field value [field value...]
-        return self.server.hmset(hkey, data)
-
-    def delete_from_pattern(self, pattern):
-        keys = self.scan_keys(pattern=pattern)
-        for k in keys:
-            self.delete(k)
-
-    def delete(self, key):
-        self.server.delete(key)
-
-    def get_set(self, key, field):
-        key = self.template.format(key=key, field=field)
-        return self.server.smembers(key)
-
-    def add_to_set(self, key, field, value):
-        key = self.template.format(key=key, field=field)
+    
+    def add_to_set(self, key, value, data_type=None):
+        if not data_type:
+            data_type = self.default_set_type
+        key = self.key(key, data_type)
         self.server.sadd(key, value)
+
+    def empty_set(self, key, data_type=None):
+        if not data_type:
+            data_type = self.default_set_type
+        key = self.key(key, data_type)
+        while self.server.spop(key): pass
+
+    def pop_set(self, key, value, data_type=None):
+        if not data_type:
+            data_type = self.default_set_type
+        key = self.key(key, data_type)
+        self.server.srem(key, value)
+
+    def set_hash(self, key, data, data_type=None):
+        if not data_type:
+            data_type = self.default_hash_type
+        key = self.key(key, data_type)
+        # redis-cli HMSET key field value [field value...]
+        return self.server.hmset(key, data)
+
+    def delete_all(self, pattern, data_type=None):
+        if not data_type:
+            data_type = '*'
+
+        keys = self.scan_keys(pattern=pattern, data_type=data_type)
+        for k in keys:
+            self.server.delete(key)
+
+    def delete(self, key, data_type=None):
+        if not data_type:
+            data_type = '*'
+        key = self.key(key, data_type)
+        self.server.delete(key)
