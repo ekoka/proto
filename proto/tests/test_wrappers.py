@@ -65,17 +65,18 @@ class VersionMapperTest(unittest.TestCase):
     def test_call(self):
         # handlers
         def fnc1(request, response, **params):
-            response['called'] = 1
+            response['params'] = params
         def fncNone(request, response, **params):
-            response['called'] = None
+            response['params'] = params
 
         vm = self.version_mapper
 
         # mapping
         vm.api_versioned_routes = {
             1: {'action_func': fnc1}, 
-            None: {'action_func': fncNone}
+            None: {'action_func': fncNone, 'converters':{'a':str, 'b':int}},
         }
+
 
         # same response object passed to the handler must be returned
         # from `version_mapper.__call__()`
@@ -84,18 +85,25 @@ class VersionMapperTest(unittest.TestCase):
         # test explicit `None` api version
         params = {'version': None}
         response = vm(self.request, response, **params)
-        self.assertIsNone(response['called'])
+        self.assertIsNone(response['params'].get('a'))
 
         # test int api version
-        params = {'version': 1}
+        params = {'version': 1, 'a':2}
         response = vm(self.request, response, **params)
-        self.assertEqual(response['called'], 1)
+        self.assertEqual(response['params']['a'], 2)
 
         # test implicit `None` api version
         params = {}
         response = vm(self.request, response, **params)
-        self.assertIsNone(response['called'])
+        self.assertIsNone(response['params'].get('a'))
 
+        # test params type conversion
+        params = {'a':1, 'b':'2'}
+        response = vm(self.request, response, **params)
+        self.assertNotEqual(response['params']['a'], 1)
+        self.assertEqual(response['params']['a'], '1')
+        self.assertNotEqual(response['params']['b'], '2')
+        self.assertEqual(response['params']['b'], 2)
 
 
     #def __call__(self, request, response, **params):
