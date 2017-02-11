@@ -3,17 +3,14 @@ from collections import OrderedDict, namedtuple
 from datetime import datetime, date, time
 from decimal import Decimal
 import json 
-from uuid import uuid4
 
+from . import rndstr
 from proto.cache import (
     params_snapshot, 
     make_hash,
     RedisStore,
     JsonResponseCache,
 )
-
-def rndstr():
-    return uuid4().hex[:6]
 
 class JsonResponseCacheTest(unittest.TestCase):
 

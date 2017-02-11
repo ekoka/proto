@@ -9,10 +9,7 @@ from .formatters import json_output_formatter, json_input_formatter
 
 class FuncSpec(object):
     def __init__(self, func):
-        try:
-            self.name = func.func_name
-        except AttributeError:
-            self.name = func.__name__
+        self.name = func.__name__
         info = inspect.getargspec(func)
         self.defaults = info.defaults
         self.allargs = info.args
@@ -194,8 +191,8 @@ class HttpWrapper(object):
         # - data
         # - files
 
-        if '__api__' in self.func_specs.allargs:
-            params['__api__'] = self.api
+        if '__app__' in self.func_specs.allargs:
+            params['__app__'] = self.app
 
         if '__request__' in self.func_specs.allargs:
             params['__request__'] = request
