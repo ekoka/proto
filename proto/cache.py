@@ -1,7 +1,6 @@
 # coding=utf8
 from hashlib import sha1
 import time
-import json
 import redis
 
 from proto._compat import isiterable
@@ -50,10 +49,10 @@ def make_hash(o):
         new_o[k] = make_hash(v)
     return sha1(repr(tuple(frozenset(new_o.items())))).hexdigest()
 
-class JsonResponseCache(object):
+class ResponseCache(object):
 
-    def __init__(self, redis_config):
-        self.store = RedisStore(**redis_config)
+    def __init__(self, store):
+        self.store = store
 
     def make_key(self, path, params=None, role=None):
         # returns `path` unmodified if `params` and `role` are empty 

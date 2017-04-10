@@ -1,15 +1,12 @@
 import inspect
-from collections import namedtuple
 from datetime import datetime
-import falcon
 
 from ._compat import iteritems
-from .globals import current_user
-from .formatters import json_output_formatter, json_input_formatter
 
 class FuncSpec(object):
     def __init__(self, func):
         self.name = func.__name__
+        self.module = func.__module__
         info = inspect.getargspec(func)
         self.defaults = info.defaults
         self.allargs = info.args
@@ -32,6 +29,7 @@ class VersionMapper(object):
         # TODO get version from query string params
         # TODO get version from request header
         if len(version) > 1:
+            # TODO make this an HTTP error
             raise Exception('Conflicting versions requested.')
         try:
             version = list(version)[0]
@@ -74,17 +72,17 @@ class VersionMapper(object):
 - xargs arguments?
 - xkwargs arguments?
 """
-class HttpWrapper(object):
 
-    # TODO: maybe pass this as a param
-    output_formatters = {'json': [json_output_formatter]}
-    input_formatters = {'json': [json_input_formatter]}
+class Wrapper(object):
 
-    def __init__(self, api, func, **kwargs):
+    def __init__(self, app, func, input_formatters, output_formatters, 
+                 **kwargs):
 
-        self.api = api
+        self.app = app
         self.func = func
         self.func_specs = FuncSpec(func)
+        self.input_formatters = input_formatters
+        self.output_formatters = output_formatters
 
         kwargs_defaults = dict(version=None,
             requires_auth=False, authorization=None, 
@@ -98,58 +96,8 @@ class HttpWrapper(object):
             setattr(self, k, kwargs.get(k, d))
 
         self.requires_auth = (True 
-                              if 'api_user' in self.func_specs.allargs else
-                              False)
-
-    @property
-    def cache(self):
-        try:
-            return self.api.cache
-        except:
-            raise
-
-
-    def fetch_cached_response(self, request, response, role=None):
-
-        cached_resource = self.cache.load_response(request, role)
-        
-        if not cached_resource:
-            # skip
-            return False
-
-        cached_data = cached_resource.get('data')
-
-
-        etag = request.if_none_match
-        timestamp = request.if_modified_since
-
-        # if client_etag matches cache_etag return not modified
-        if etag: 
-            cached_etag = cached_resource.get('etag')
-            if cached_etag and etag==cached_etag:
-                response.status = falcon.HTTP_304
-        # if not deactivated and cached_etag:
-        elif timestamp: 
-            try:
-                cached_timestamp = datetime.fromtimestamp(
-                    float(cached_resource['timestamp']))
-            except:
-                cached_timestamp = None
-            if cached_timestamp and timestamp>=cached_timestamp:
-                response.status = falcon.HTTP_304
-
-        if response.status==falcon.HTTP_304:
-            return True
-
-        # if etag is in cache, but client's etag is stale or empty,
-        # serve back data from cache and refresh etag.
-        response.data = cached_data
-        response.status = falcon.HTTP_200
-        if cached_resource.get('etag'):
-            response.etag = cached_resource['etag']
-        elif cached_resource.get('timestamp'):
-            response.last_modified = cached_resource['timestamp']
-        return True
+            if ('__user__' in self.func_specs.allargs) or self.authorization
+            else  False)
 
     def __call__(self, request, response, **kwargs):
         api_version = kwargs.pop('version', None)
@@ -172,7 +120,7 @@ class HttpWrapper(object):
                 # not overwriting params
                 params.setdefault(param, value)
 
-        cache_found = False
+        cached = False
         if self.cacheable:
             # TODO: if the resource expects a role, fetch it from the user and
             # add it to the call here. 
@@ -181,10 +129,10 @@ class HttpWrapper(object):
             # to the user's currently assumed role (user.current_role) to
             # determine which representation of the resource should be
             # returned by either the cache or the api call.
-            cache_found = self.fetch_cached_response(request, response)
+            cached = self.app.populate_from_cache(request, response)
 
-        if cache_found:
-            return
+        if cached:
+            return response
 
         # TODO
         # other potential objects of interest
@@ -217,14 +165,14 @@ class HttpWrapper(object):
             response.last_modified = datetime.utcnow()
             self.cache.store_response(request, response)
 
-    def input_format(self, input, content_type='json'):
+    def input_format(self, input):
         rv = input
-        for f in self.input_formatters.get(content_type, []):
+        for f in self.input_formatters:
             rv = f(rv)
         return rv
 
-    def output_format(self, output, content_type='json'):
+    def output_format(self, output):
         rv = output
-        for f in self.output_formatters.get(content_type, []):
+        for f in self.output_formatters:
             rv = f(rv)
         return rv

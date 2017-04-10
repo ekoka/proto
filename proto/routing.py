@@ -5,6 +5,7 @@ from falcon.routing import create_http_method_map, compile_uri_template
 
 from ._compat import isiterable, isnumber
 
+class RoutingError(Exception): pass
 
 class Route(object):
 
@@ -26,22 +27,27 @@ class Route(object):
             methods = ['GET']
 
         if not isiterable(methods):
-            raise Exception('non-iterable HTTP methods.')
+            raise RoutingError('non-iterable HTTP methods.')
 
         if set(methods).difference(falcon.HTTP_METHODS):
             method = list(set(methods).difference(falcon.HTTP_METHODS))[0]
-            raise Exception("Unsupported HTTP method: '{0}'.".format(method))
+            raise RoutingError("Unsupported HTTP method: '{0}'.".format(method))
 
         if version is not None and not isnumber(version, exclude_decimal=True):
-            raise Exception('Version specified at routing must be an integer.')
+            raise RoutingError('Version specified at routing must be an integer.')
 
         for method in methods:
-            self.actions.setdefault(method, {})[version] = action = dict(
+            action = dict(
                 action_func=action_func,
                 converters=converters,
-                func_name=action_func.func_specs.name 
-                        if hasattr(action_func, 'func_specs') else
-                        action_func.__name__)
+                name=(action_func.func_specs.name 
+                           if hasattr(action_func, 'func_specs')
+                           else action_func.__name__),
+                module=(action_func.func_specs.module 
+                        if hasattr(action_func, 'func_specs')
+                        else action_func.__module__))
+            action['full_name'] = '.'.join([action['module'], action['name']])
+            self.actions.setdefault(method, {})[version] = action
 
     def get_action(self, method=None, version=None):
         if method is None:
@@ -94,39 +100,47 @@ class Router(object):
         route.add_action(action_func, methods=methods, version=version,
                          converters=converters)
 
+        if methods is None:
+            methods = []
+
         for method in methods:
-            func_name = route.actions[method][version]['func_name']
-            url_map = self.reverse_routes.setdefault(func_name, {})
+            full_name = route.actions[method][version]['full_name']
+            reverse_route = self.reverse_routes.setdefault(full_name, {})
             # a single action/method combo can be be linked to by multiple urls
-            url_map.setdefault(method, []).append(url)
+            url_map = reverse_route.setdefault(method, {})
+            url_map.setdefault(version, []).append(url)
 
         
     # a reverse mapper to ease implementation of HATEOAS
     def action_to_url(self, func, method='GET', version=None, hint=None, 
-                      *args, **kwargs):
+                      **params):
         if hasattr(func, 'func_specs'):
-            func_name = func.func_specs.name
+            func_name = '.'.join([func.func_specs.module, 
+                                  func.func_specs.name])
         elif hasattr(func, '__name__'):
-            func_name = func.__name__
+            func_name = '.'.join([func.__module__, func.__name__])
         else:
             func_name = func
 
-        urls = self.reverse_routes[func_name][method][version]
+        templates = self.reverse_routes[func_name][method][version]
         
-        def _find_hint(urls, hint):
-            for url in urls:
-                if hint in url:
-                    return url 
-            raise Exception("Could not find hint '{0}' among registered urls."
-                            .format(hint))
+        def _find_hint(templates, hint):
+            for t in templates:
+                if hint in t:
+                    return t 
+            raise RoutingError("Could not find hint '{0}' in registered urls."
+                               .format(hint))
 
         if hint:
-            url = _find_hint(urls, hint)
+            template = _find_hint(templates, hint)
         else:
-            url = urls[0] 
+            template = templates[0]
+
+        return template
         
         if version:
-            return self.url_base + '/v{0}'.format(version) + url
+            rv = self.app.url_base + '/v{0}'.format(version) + template
         else:
-            return self.url_base + url 
+            rv = self.app.url_base + template 
+        return rv.format(**params)
 

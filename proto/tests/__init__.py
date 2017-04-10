@@ -1,6 +1,8 @@
 # coding=utf8
 from uuid import uuid4
 
-def rndstr():
-    return uuid4().hex[:6]
+from falcon.testing import rand_string
+
+def rndstr(min=5, max=10):
+    return rand_string(min, max)
 

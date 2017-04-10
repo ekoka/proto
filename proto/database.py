@@ -110,7 +110,6 @@ class SQLAlchemy(object):
             k = k.lower()
             if k.startswith(_prefix):
                 rv[k[len(_prefix):]] = v
-            #print rv
         rv.setdefault('binds', {None: 'sqlite://'})
         rv.setdefault('native_unicode', True)
         rv.setdefault('echo', False)

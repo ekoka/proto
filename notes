@@ -2,7 +2,7 @@ roles
 -----
 - when user specifies the active_role through qs param, it should be popped out of the params dict to not affect the cache key
 - when the active_role specified by user isn't part of its roles, the system should silently ignore it (still pop it out of the params dict).  
-- only resources that need to know which role the user is assuming will need to use the user.active_role attribute.
+- only resources that need to know which role the user is assuming will need to use the `user.active_role` attribute.
 - the role should only be part of cache key when the resource changes depending on it.
 
 cache

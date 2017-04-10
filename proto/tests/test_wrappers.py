@@ -1,16 +1,12 @@
-import unittest
+import testtools
 
-from falcon import testing as falcon_testing
+from falcon import testing as falcon_testing, Response
 
-from proto.wrapper import (
-    FuncSpec,
-    VersionMapper,
-    HttpWrapper,
-)
+from proto.wrapper import (FuncSpec, VersionMapper, Wrapper)
 
 from . import rndstr
 
-class FuncSpecTest(unittest.TestCase):
+class FuncSpecTest(testtools.TestCase):
     def test_reflection(self):
         mock_fnc = lambda a,b,c, d="alpha", e=None, *arg, **kwargs: None
         fnc_spec = FuncSpec(mock_fnc)
@@ -26,9 +22,20 @@ class FuncSpecTest(unittest.TestCase):
         self.assertEqual(fnc_spec.varargs, 'arg')
         self.assertEqual(fnc_spec.varkwargs, 'kwargs')
 
-class VersionMapperTest(unittest.TestCase):
+class BaseTest(testtools.TestCase):
+    def create_environ(self):
+        return falcon_testing.create_environ(
+            path='/api/test', query_string='a=3&b=2&c=1&b=4&b=5&a=3',
+            protocol='HTTP/1.1', scheme='http', host='localhost', port=None,
+            headers=None, app='', body='', method='GET', wsgierrors=None,
+            file_wrapper=None)
 
+    def create_response(self):
+        return Response()
+
+class VersionMapperTest(BaseTest):
     def setUp(self):
+        super(VersionMapperTest, self).setUp()
         def abc(): pass
         def cba(): pass
         def xyz(): pass
@@ -42,11 +49,7 @@ class VersionMapperTest(unittest.TestCase):
         self.version_mapper = VersionMapper(
             api_versioned_routes=versioned_routes)
 
-        self.request = falcon_testing.create_environ(
-            path='/api/test', query_string='a=3&b=2&c=1&b=4&b=5&a=3',
-            protocol='HTTP/1.1', scheme='http', host='localhost', port=None,
-            headers=None, app='', body='', method='GET', wsgierrors=None,
-            file_wrapper=None)
+        self.request = self.create_environ()
 
     def test_get_route(self):
         route = self.version_mapper.get_route(self.request, url_version=None)
@@ -78,9 +81,9 @@ class VersionMapperTest(unittest.TestCase):
         }
 
 
-        # same response object passed to the handler must be returned
-        # from `version_mapper.__call__()`
         response = {}
+        # same response object passed to the handler must be returned
+        # by `version_mapper.__call__()`
 
         # test explicit `None` api version
         params = {'version': None}
@@ -105,28 +108,109 @@ class VersionMapperTest(unittest.TestCase):
         self.assertNotEqual(response['params']['b'], '2')
         self.assertEqual(response['params']['b'], 2)
 
+class WrapperTest(BaseTest):
+    def test_default_params(self):
+        app = None 
+        def abc(a, b, c, __user__, d=3, e=None): pass
+        tenant = rndstr()
 
-    #def __call__(self, request, response, **params):
-    #    route = self.get_route(
-    #        request, url_version=params.pop('version', None))
+        wrapper = Wrapper(app, abc, None, None, cacheable=True, 
+                          tenants=[tenant])
 
-    #    if route is None:
-    #        #TODO: add a not found handler here 
-    #        pass
+        # if not specified some settings should be set to a default
+        # value on the wrapper
+        self.assertFalse(wrapper.multitenant)
+        self.assertIsNone(wrapper.authorization)
+        self.assertIsNone(wrapper.endpoint)
 
-    #    # converting param values to types specified during routing
-    #    if route.get('converters', None):
-    #        for name, converter in iteritems(route['converters']):
-    #            try:
-    #                params[name] = converter(params[name])
-    #            except KeyError:
-    #                pass
+        # specified settings should override defaults
+        self.assertTrue(wrapper.cacheable)
+        self.assertIn(tenant, wrapper.tenants)
 
-    #    #response.body = route['action_func'](request, response, **params)
-    #    route['action_func'](request, response, **params)
-    #    return response
+        # when `__user__` param present on func signature auth must be required
+        self.assertTrue(wrapper.requires_auth)
+
+        # when authorization specified on func signature auth must be required
+        def abc(a, b, c, d=3, e=None): pass
+        wrapper = Wrapper(app, abc, None, None, authorization=['admin'])
+        self.assertTrue(wrapper.requires_auth)
+
+        # when neither authorization nor __user__ specified on func signature
+        # auth is not required
+        wrapper = Wrapper(app, abc, None, None)
+        self.assertFalse(wrapper.requires_auth)
+
+    def test_call(self):
+        app = None 
+        def abc(a, b, c, __user__, d=3, e=None): pass
+        wrapper = Wrapper(app, abc, None, None)
+        self.fail()
+        # wrapper(request, response, version=None, tenant=None)
 
 
-class HttpWrapperTest(unittest.TestCase):
-    pass
+    #def __call__(self, request, response, **kwargs):
+    #    api_version = kwargs.pop('version', None)
+    #    tenant = kwargs.pop('tenant', None)
+    #    if self.requires_auth and not request.context.get('user', None):
+    #        #TODO: make it an HTTP error
+    #        raise Exception('User must be logged in.')
+
+    #    if self.authorization and not request.context.get('authorized', False):
+    #        #TODO: make it an HTTP error
+    #        raise Exception('Unauthorized user.')
+
+    #    params = dict()
+    #    for arg, value in iteritems(kwargs):
+    #        params[arg] = value
+
+    #    for param, value in iteritems(request.params):
+    #        if param in self.func_specs.kwargsdict:
+    #            # not overwriting params
+    #            params.setdefault(param, value)
+
+    #    cache_found = False
+    #    if self.cacheable:
+    #        # TODO: if the resource expects a role, fetch it from the user and
+    #        # add it to the call here. 
+    #        # The present wrapper should have an attribute to remember the 
+    #        # qualifying roles during routing. They should then be compared 
+    #        # to the user's currently assumed role (user.current_role) to
+    #        # determine which representation of the resource should be
+    #        # returned by either the cache or the api call.
+    #        cache_found = self.app.fetch_cached_response(request, response)
+
+    #    if cache_found:
+    #        return
+
+    #    # TODO
+    #    # other potential objects of interest
+    #    # - data
+    #    # - files
+
+    #    if '__app__' in self.func_specs.allargs:
+    #        params['__app__'] = self.app
+
+    #    if '__request__' in self.func_specs.allargs:
+    #        params['__request__'] = request
+
+    #    if '__response__' in self.func_specs.allargs:
+    #        params['__response__'] = response
+
+    #    if '__data__' in self.func_specs.allargs:
+    #        api_data = request.bounded_stream.read()
+    #        params['__data__'] = self.input_format(api_data)
+    #        
+    #    if '__user__' in self.func_specs.allargs:
+    #        params['__user__'] = request.context.get('user', None)
+
+    #    if '__tenant__' in self.func_specs.allargs:
+    #        params['__tenant__'] = request.context.get('tenant', None)
+
+    #    response.context['result'] = result = self.func(**params)
+    #    response.data = self.output_format(result)
+
+    #    if self.cacheable:
+    #        response.last_modified = datetime.utcnow()
+    #        self.cache.store_response(request, response)
+
 

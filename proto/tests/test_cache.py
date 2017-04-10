@@ -1,20 +1,18 @@
-import unittest
-from collections import OrderedDict, namedtuple
-from datetime import datetime, date, time
-from decimal import Decimal
-import json 
+import testtools
+from collections import namedtuple
+from datetime import datetime
 
 from . import rndstr
 from proto.cache import (
     params_snapshot, 
     make_hash,
     RedisStore,
-    JsonResponseCache,
+    ResponseCache,
 )
 
-class JsonResponseCacheTest(unittest.TestCase):
-
+class ResponseCacheTest(testtools.TestCase):
     def setUp(self):
+        super(ResponseCacheTest, self).setUp()
         test_namespace = 'test'
         redis_config = dict(
             namespace=test_namespace,
@@ -22,11 +20,12 @@ class JsonResponseCacheTest(unittest.TestCase):
             port=None, 
             db=0,
         )
-        self.cache = JsonResponseCache(redis_config)
-        self.store = self.cache.store
+        self.store = RedisStore(**redis_config)
+        self.cache = ResponseCache(self.store)
         self.server = self.store.server
 
     def tearDown(self):
+        super(ResponseCacheTest, self).tearDown()
         # empty server
         self.server.flushdb()
 
